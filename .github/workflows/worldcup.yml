@@ -29,21 +29,27 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: 🔍 检查 BARK_KEY 是否已配置
+        run: |
+          if [ -z "${{ secrets.BARK_KEY }}" ]; then
+            echo "❌ BARK_KEY 未设置！"
+            echo "   请在 GitHub → Settings → Secrets → Actions → 添加 BARK_KEY"
+            exit 1
+          else
+            echo "✅ BARK_KEY 已配置"
+            echo "   长度: ${{ secrets.BARK_KEY }}" | sed 's/./*/g'
+            echo "   密钥长度: $(echo -n "${{ secrets.BARK_KEY }}" | wc -c) 字符"
+          fi
+
       - name: 📦 安装依赖
         run: pip install --no-cache-dir -r requirements.txt || true
 
-      - name: 🌅 早上推送 - 今日赛程
-        if: github.event.schedule == '0 0 * * *' || github.event.inputs.push_type == 'morning'
+      - name: 🏃 运行推送脚本
         env:
           BARK_KEY: ${{ secrets.BARK_KEY }}
-          PUSH_TYPE: morning
+          PUSH_TYPE: ${{ github.event.inputs.push_type || 'auto' }}
           TZ: Asia/Shanghai
-        run: python worldcup_push.py
-
-      - name: 🌇 晚上推送 - 今日战报
-        if: github.event.schedule == '0 13 * * *' || github.event.inputs.push_type == 'evening'
-        env:
-          BARK_KEY: ${{ secrets.BARK_KEY }}
-          PUSH_TYPE: evening
-          TZ: Asia/Shanghai
-        run: python worldcup_push.py
+        run: |
+          echo "📋 触发方式: ${{ github.event_name }}"
+          echo "📋 推送类型: ${{ github.event.inputs.push_type || 'auto(根据当前时间)' }}"
+          python worldcup_push.py

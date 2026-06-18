@@ -7,29 +7,22 @@ World Cup 2026 推送脚本
 
 import json
 import os
-import sys
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 # ============================================================
-# 配置（会在 GitHub Actions 中通过环境变量设置）
+# 配置
 # ============================================================
 BARK_KEY = os.environ.get("BARK_KEY", "")
-BARK_URL = f"https://api.day.app/{BARK_KEY}/"
+TZ_OFFSET = timedelta(hours=8)  # 北京时间
 
-# 时区 (UTC+8 北京时间)
-TZ_OFFSET = timedelta(hours=8)
 
 # ============================================================
 # 数据源
 # ============================================================
-
-# 数据源 1：worldcup26.ir（免费开源，无需 Key）
 WORLDCUP26_API = "https://worldcup26.ir/get/games"
-
-# 数据源 2：ESPN 公共 API（备用，无需 Key）
 ESPN_API = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
 
 
@@ -48,83 +41,112 @@ def fetch_json(url: str, timeout: int = 15) -> Optional[dict]:
         return None
 
 
-def fetch_matches_from_worldcup26() -> Optional[list]:
-    """从 worldcup26.ir 获取所有比赛"""
-    print(f"  📡 尝试数据源: worldcup26.ir ...")
-    data = fetch_json(WORLDCUP26_API)
-    if not data:
-        return None
-    print(f"  ✅ 数据获取成功，原始数据类型: {type(data).__name__}")
-    print(f"  📄 原始数据(截断): {json.dumps(data, ensure_ascii=False)[:1000]}")
-    return data
-
-
-def fetch_matches_from_espn() -> Optional[list]:
-    """从 ESPN 获取比赛数据（备用）"""
-    print(f"  📡 尝试数据源: ESPN ...")
-    data = fetch_json(ESPN_API)
-    if not data:
-        return None
-    print(f"  ✅ ESPN 数据获取成功")
-    return data
-
-
 # ============================================================
-# 数据解析
+# 解析 worldcup26.ir（主数据源）
 # ============================================================
+
+def to_score(val) -> Optional[int]:
+    """把分数转成 int，处理 'null' 字符串和 None"""
+    if val is None:
+        return None
+    s = str(val).strip().lower()
+    if s in ("null", "none", "", "?"):
+        return None
+    try:
+        return int(float(s))  # 先转 float 再 int，防止 "2.0" 之类
+    except (ValueError, TypeError):
+        return None
+
+
+def to_status(finished: Optional[str], time_elapsed: Optional[str]) -> str:
+    """转换比赛状态"""
+    # time_elapsed 的可能值: "finished", "not_started", "in_progress" 或类似
+    te = (time_elapsed or "").strip().lower()
+    if te in ("finished", "full_time", "completed", "final"):
+        return "finished"
+    if te in ("in_progress", "live", "first_half", "second_half", "half_time", "halftime"):
+        return "live"
+    if te in ("not_started", "scheduled", "pre", ""):
+        return "scheduled"
+    # 根据 finished 字段判断
+    fn = (finished or "").strip().upper()
+    if fn == "TRUE":
+        return "finished"
+    return "scheduled"
+
 
 def parse_worldcup26_matches(data) -> Optional[list]:
     """解析 worldcup26.ir 的比赛数据"""
     try:
-        # 数据可能是 { "data": [...] } 或 { "matches": [...] } 或 直接是列表
+        games = None
         if isinstance(data, list):
-            matches = data
+            games = data
         elif isinstance(data, dict):
-            matches = (data.get("data") or data.get("matches") or data.get("games") or
-                       data.get("results") or [])
-        else:
-            return None
+            # 实际返回: {"games": [...]}
+            games = data.get("games") or data.get("data") or data.get("matches") or []
 
-        if not matches:
+        if not games:
             return None
 
         parsed = []
-        for m in matches:
+        for m in games:
             if not isinstance(m, dict):
                 continue
-            # 尝试多种字段名
-            home_team = (m.get("home_team") or m.get("homeTeam") or m.get("home_team_en") or
-                         m.get("home", {}).get("name") or "?")
-            away_team = (m.get("away_team") or m.get("awayTeam") or m.get("away_team_en") or
-                         m.get("away", {}).get("name") or "?")
-            home_score = (m.get("home_score") if m.get("home_score") is not None else
-                         m.get("homeScore") if m.get("homeScore") is not None else
-                         m.get("home", {}).get("score"))
-            away_score = (m.get("away_score") if m.get("away_score") is not None else
-                         m.get("awayScore") if m.get("awayScore") is not None else
-                         m.get("away", {}).get("score"))
-            status = (m.get("status") or m.get("status_name") or
-                     m.get("statusName") or "scheduled")
-            # 时间
-            match_time = (m.get("date") or m.get("datetime") or m.get("time") or
-                         m.get("match_time") or m.get("matchTime") or "")
-            # 阶段
-            stage = (m.get("stage") or m.get("round_name") or m.get("roundName") or "")
 
-            # 用队伍名生成唯一键去重
+            home_team = m.get("home_team_name_en") or m.get("home_team") or "?"
+            away_team = m.get("away_team_name_en") or m.get("away_team") or "?"
+            home_score = to_score(m.get("home_score"))
+            away_score = to_score(m.get("away_score"))
+            status = to_status(m.get("finished"), m.get("time_elapsed"))
+
+            # 时间: "06/11/2026 13:00" → 转成 HH:mm
+            raw_time = str(m.get("local_date") or m.get("date") or "")
+            time_display = raw_time[-5:] if len(raw_time) >= 5 else raw_time
+
+            # 阶段: group + group_name
+            group = m.get("group") or ""
+            stage = f"Group {group}" if group else ""
+
+            # 原始日期用于过滤
+            date_str = raw_time[:10] if len(raw_time) >= 10 else ""  # "06/11/2026"
+
             parsed.append({
                 "home_team": str(home_team),
                 "away_team": str(away_team),
-                "home_score": int(home_score) if home_score is not None else None,
-                "away_score": int(away_score) if away_score is not None else None,
-                "status": str(status).lower(),
-                "time": str(match_time),
-                "stage": str(stage),
+                "home_score": home_score,
+                "away_score": away_score,
+                "status": status,
+                "time": time_display,
+                "date_str": date_str,
+                "stage": stage,
             })
+
         return parsed if parsed else None
+
     except Exception as e:
         print(f"  ⚠️ 解析 worldcup26.ir 数据出错: {e}")
         return None
+
+
+# ============================================================
+# 解析 ESPN（备用）
+# ============================================================
+
+ESPN_STATUS_MAP = {
+    "status_scheduled": "scheduled",
+    "status_in_progress": "live",
+    "status_final": "finished",
+    "status_postponed": "scheduled",
+    "status_cancelled": "finished",
+    "status_suspended": "live",
+    "pre_game": "scheduled",
+    "in_progress": "live",
+    "half": "live",
+    "final": "finished",
+    "scheduled": "scheduled",
+    "live": "live",
+    "finished": "finished",
+}
 
 
 def parse_espn_matches(data) -> Optional[list]:
@@ -135,8 +157,6 @@ def parse_espn_matches(data) -> Optional[list]:
             return None
 
         parsed = []
-        now = datetime.now(timezone.utc)
-
         for event in events:
             comps = event.get("competitions", [{}])
             if not comps:
@@ -150,20 +170,38 @@ def parse_espn_matches(data) -> Optional[list]:
             home = competitors[0]
             away = competitors[1]
 
-            home_score = home.get("score")
-            away_score = away.get("score")
-            status = comp.get("status", {}).get("type", {}).get("name", "scheduled")
+            home_team = home.get("team", {}).get("displayName", "?")
+            away_team = away.get("team", {}).get("displayName", "?")
+            home_score = to_score(home.get("score"))
+            away_score = to_score(away.get("score"))
+
+            # ESPN 状态: "STATUS_SCHEDULED", "STATUS_IN_PROGRESS", "STATUS_FINAL"
+            raw_status = comp.get("status", {}).get("type", {}).get("name", "scheduled")
+            raw_status = raw_status.lower()
+            status = ESPN_STATUS_MAP.get(raw_status, "scheduled")
+
+            # ESPN 时间: ISO 8601 → 取 HH:mm
             date_str = comp.get("date") or event.get("date") or ""
+            time_display = date_str[11:16] if len(date_str) >= 16 else date_str
+            # 日期部分 YYYY-MM-DD
+            iso_date = date_str[:10] if len(date_str) >= 10 else ""
+
+            stage = event.get("name", "")
+            # ESPN 的 name 可能是 "2026 FIFA World Cup | Group A"，截短
+            if "|" in stage:
+                stage = stage.split("|")[-1].strip()
 
             parsed.append({
-                "home_team": home.get("team", {}).get("displayName", "?"),
-                "away_team": away.get("team", {}).get("displayName", "?"),
-                "home_score": int(home_score) if home_score is not None else None,
-                "away_score": int(away_score) if away_score is not None else None,
-                "status": str(status).lower(),
-                "time": date_str,
-                "stage": event.get("name", ""),
+                "home_team": str(home_team),
+                "away_team": str(away_team),
+                "home_score": home_score,
+                "away_score": away_score,
+                "status": status,
+                "time": time_display,
+                "date_str": iso_date,
+                "stage": stage,
             })
+
         return parsed if parsed else None
     except Exception as e:
         print(f"  ⚠️ 解析 ESPN 数据出错: {e}")
@@ -171,65 +209,60 @@ def parse_espn_matches(data) -> Optional[list]:
 
 
 # ============================================================
-# 核心：获取并过滤今天的比赛
+# 获取今天的比赛
 # ============================================================
 
-def get_today_matches() -> list:
-    """获取今天的比赛（先 primary，失败则 fallback）"""
-    now = datetime.now(timezone.utc) + TZ_OFFSET
-    today_str = now.strftime("%Y-%m-%d")
-    print(f"📅 北京时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"🔍 查找日期: {today_str} 的比赛")
+def today_matches() -> list:
+    """获取今天的比赛"""
+    now_beijing = datetime.now(timezone.utc) + TZ_OFFSET
+    today_mmdd = now_beijing.strftime("%m/%d/%Y")  # "06/18/2026" (worldcup26.ir 格式)
+    today_iso = now_beijing.strftime("%Y-%m-%d")    # "2026-06-18" (ESPN 格式)
+    print(f"📅 北京时间: {now_beijing.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🔍 匹配日期: {today_mmdd} 或 {today_iso}")
 
-    raw = None
-    matches = None
+    all_today = []
 
-    # 1. 尝试 worldcup26.ir
+    # --- 数据源 1: worldcup26.ir ---
     print("\n--- 数据源 1: worldcup26.ir ---")
-    raw = fetch_matches_from_worldcup26()
-    if raw:
-        matches = parse_worldcup26_matches(raw)
+    data = fetch_json(WORLDCUP26_API)
+    if data:
+        games = parse_worldcup26_matches(data)
+        if games:
+            print(f"  ✅ 解析到 {len(games)} 场比赛（全部）")
+            for m in games:
+                if today_mmdd in m["date_str"] or m["date_str"] in today_mmdd:
+                    all_today.append(m)
+                    print(f"     📅 {m['time']} {m['home_team']} vs {m['away_team']} [{m['status']}]")
+            print(f"  📌 今日比赛: {sum(1 for m in games if today_mmdd in m['date_str'] or m['date_str'] in today_mmdd)} 场")
+        else:
+            print("  ⚠️ 解析失败")
+    else:
+        print("  ⚠️ 获取失败")
 
-    # 2. 失败则尝试 ESPN
-    if not matches:
+    # --- 数据源 2: ESPN (备用) ---
+    if not all_today:
         print("\n--- 数据源 2: ESPN (备用) ---")
-        raw = fetch_matches_from_espn()
-        if raw:
-            matches = parse_espn_matches(raw)
+        data = fetch_json(ESPN_API)
+        if data:
+            games = parse_espn_matches(data)
+            if games:
+                print(f"  ✅ 解析到 {len(games)} 场比赛（全部）")
+                for m in games:
+                    if today_iso in m["date_str"] or m["date_str"] == "":
+                        all_today.append(m)
+                        print(f"     📅 {m['time']} {m['home_team']} vs {m['away_team']} [{m['status']}]")
+                print(f"  📌 今日比赛: {len(all_today)} 场")
 
-    if not matches:
-        print("\n❌ 所有数据源均失败")
-        return []
-
-    print(f"\n📊 共获取到 {len(matches)} 场比赛（全部）")
-
-    # 按今天日期过滤（如果 API 返回的数据有时间字段）
-    today_matches = []
-    for m in matches:
-        time_str = m["time"]
-        if time_str:
-            # 尝试从时间字符串中提取 YYYY-MM-DD
-            try:
-                match_date = time_str[:10]
-                if match_date == today_str:
-                    today_matches.append(m)
-                    continue
-            except (IndexError, ValueError):
-                pass
-        # 如果没时间或者不匹配，把所有数据都留着
-        # （有些 API 只返回正在进行的比赛）
-        today_matches.append(m)
-
-    # 去重（按队伍组合）
+    # 去重
     seen = set()
     unique = []
-    for m in today_matches:
+    for m in all_today:
         key = (m["home_team"], m["away_team"])
         if key not in seen:
             seen.add(key)
             unique.append(m)
 
-    print(f"📅 今天的比赛: {len(unique)} 场")
+    print(f"\n📊 最终: {len(unique)} 场比赛")
     return unique
 
 
@@ -238,88 +271,93 @@ def get_today_matches() -> list:
 # ============================================================
 
 def format_schedule(matches: list) -> str:
-    """格式化：当天赛程（早上推送）"""
+    """早上：当天赛程"""
     if not matches:
-        today = (datetime.now(timezone.utc) + TZ_OFFSET).strftime("%m/%d")
-        return f"📅 {today} 世界杯 | 今天没有比赛，休息一天～"
+        return "📅 世界杯 | 今天没有比赛，休息一天～"
 
     lines = []
     today = (datetime.now(timezone.utc) + TZ_OFFSET).strftime("%m/%d")
     lines.append(f"📅 世界杯 · {today} 赛程预告")
     lines.append("─" * 20)
 
-    # 区分进行中/未开始的比赛
-    upcoming = [m for m in matches if m["status"] in ("scheduled", "pre", "pre_game", "")]
-    in_progress = [m for m in matches if m["status"] in ("in_progress", "live", "in progress")]
-    finished = [m for m in matches if m["status"] in ("finished", "complete", "completed", "final")]
-
-    if upcoming:
-        lines.append(f"\n⏳ 未开始 ({len(upcoming)}):")
-        for m in upcoming:
-            time_display = m.get("time", "")[11:16] if len(m.get("time", "")) > 11 else (m.get("time", "") or "待定")
-            stage = f" [{m['stage']}]" if m['stage'] and m['stage'] != "?" else ""
-            lines.append(f"  {time_display} {m['home_team']} vs {m['away_team']}{stage}")
-
-    if in_progress:
-        lines.append(f"\n⚡ 进行中 ({len(in_progress)}):")
-        for m in in_progress:
-            hs = m["home_score"] if m["home_score"] is not None else "?"
-            as_ = m["away_score"] if m["away_score"] is not None else "?"
-            lines.append(f"  🟢 {m['home_team']} {hs} - {as_} {m['away_team']}")
-
-    if finished and not matches:  # 早上一般不显示已结束的
-        pass
-
-    lines.append("\n─── via WorldCup Push ───")
-    return "\n".join(lines)
-
-
-def format_results(matches: list) -> str:
-    """格式化：当天比赛结果（晚上推送）"""
-    if not matches:
-        today = (datetime.now(timezone.utc) + TZ_OFFSET).strftime("%m/%d")
-        return f"⚽ {today} 世界杯 | 今天没有比赛"
-
-    lines = []
-    today = (datetime.now(timezone.utc) + TZ_OFFSET).strftime("%m/%d")
-    lines.append(f"⚽ 世界杯 · {today} 战报")
-    lines.append("─" * 20)
-
-    finished = [m for m in matches if m["status"] in ("finished", "complete", "completed", "final")]
-    in_progress = [m for m in matches if m["status"] in ("in_progress", "live", "in progress")]
-    upcoming = [m for m in matches if m["status"] in ("scheduled", "pre", "pre_game", "")]
-    unknown = [m for m in matches if m["status"] not in ("finished", "complete", "completed", "final",
-                                                           "in_progress", "live", "in progress",
-                                                           "scheduled", "pre", "pre_game", "")]
+    # 按时间分组
+    upcoming = [m for m in matches if m["status"] == "scheduled"]
+    live = [m for m in matches if m["status"] == "live"]
+    finished = [m for m in matches if m["status"] == "finished"]
 
     if finished:
         lines.append(f"\n✅ 已结束 ({len(finished)}):")
         for m in finished:
             hs = m["home_score"] if m["home_score"] is not None else "?"
             as_ = m["away_score"] if m["away_score"] is not None else "?"
-            stage = f" [{m['stage']}]" if m['stage'] and m['stage'] != "?" else ""
-            lines.append(f"  {m['home_team']} {hs} - {as_} {m['away_team']}{stage}")
-            # 赢方标记
-            if m["home_score"] is not None and m["away_score"] is not None:
-                if m["home_score"] > m["away_score"]:
-                    lines[-1] += " 👑"
-                elif m["away_score"] > m["home_score"]:
-                    lines[-1] += " 👑"
-                else:
-                    lines[-1] += " 🤝"
+            emoji = " 👑" if (m["home_score"] is not None and m["away_score"] is not None
+                              and m["home_score"] != m["away_score"]) else ""
+            lines.append(f"  {m['home_team']} {hs} - {as_} {m['away_team']}{emoji}")
 
-    if in_progress:
-        lines.append(f"\n⚡ 还在踢 ({len(in_progress)}):")
-        for m in in_progress:
+    if live:
+        lines.append(f"\n⚡ 进行中 ({len(live)}):")
+        for m in live:
             hs = m["home_score"] if m["home_score"] is not None else "?"
             as_ = m["away_score"] if m["away_score"] is not None else "?"
             lines.append(f"  🟢 {m['home_team']} {hs} - {as_} {m['away_team']}")
 
     if upcoming:
-        lines.append(f"\n⏳ 还没踢 ({len(upcoming)}):")
+        lines.append(f"\n⏳ 赛程 ({len(upcoming)}):")
         for m in upcoming:
-            time_display = m.get("time", "")[11:16] if len(m.get("time", "")) > 11 else (m.get("time", "") or "待定")
-            lines.append(f"  {time_display} {m['home_team']} vs {m['away_team']}")
+            s = f"  {m['time']} {m['home_team']} vs {m['away_team']}"
+            if m["stage"]:
+                s += f" ({m['stage']})"
+            lines.append(s)
+
+    lines.append("\n─── via WorldCup Push ───")
+    return "\n".join(lines)
+
+
+def format_results(matches: list) -> str:
+    """晚上：当天战报"""
+    if not matches:
+        return "⚽ 世界杯 | 今天没有比赛"
+
+    lines = []
+    today = (datetime.now(timezone.utc) + TZ_OFFSET).strftime("%m/%d")
+    lines.append(f"⚽ 世界杯 · {today} 战报")
+    lines.append("─" * 20)
+
+    finished = [m for m in matches if m["status"] == "finished"]
+    live = [m for m in matches if m["status"] == "live"]
+    upcoming = [m for m in matches if m["status"] == "scheduled"]
+
+    if finished:
+        lines.append(f"\n✅ 已结束 ({len(finished)}):")
+        for m in finished:
+            hs = m["home_score"] if m["home_score"] is not None else "?"
+            as_ = m["away_score"] if m["away_score"] is not None else "?"
+            line = f"  {m['home_team']} {hs} - {as_} {m['away_team']}"
+            if m["home_score"] is not None and m["away_score"] is not None:
+                if m["home_score"] > m["away_score"]:
+                    line += " 👑"
+                elif m["away_score"] > m["home_score"]:
+                    line += " 👑"
+                else:
+                    line += " 🤝"
+            if m["stage"]:
+                line += f" ({m['stage']})"
+            lines.append(line)
+
+    if live:
+        lines.append(f"\n⚡ 还在踢 ({len(live)}):")
+        for m in live:
+            hs = m["home_score"] if m["home_score"] is not None else "?"
+            as_ = m["away_score"] if m["away_score"] is not None else "?"
+            lines.append(f"  🟢 {m['home_team']} {hs} - {as_} {m['away_team']}")
+
+    if upcoming:
+        lines.append(f"\n⏳ 即将开始 ({len(upcoming)}):")
+        for m in upcoming:
+            s = f"  {m['time']} {m['home_team']} vs {m['away_team']}"
+            if m["stage"]:
+                s += f" ({m['stage']})"
+            lines.append(s)
 
     lines.append("\n─── via WorldCup Push ───")
     return "\n".join(lines)
@@ -332,16 +370,17 @@ def format_results(matches: list) -> str:
 def send_bark(title: str, body: str, group: str = "世界杯") -> bool:
     """通过 Bark API 推送通知到 iPhone"""
     if not BARK_KEY:
-        print("❌ 未设置 BARK_KEY 环境变量")
-        print("💡 请在 GitHub 仓库 Settings → Secrets → Actions 中添加 BARK_KEY")
+        print("\n❌ 未设置 BARK_KEY 环境变量")
+        print("💡 请在 GitHub → Settings → Secrets → Actions → 添加 BARK_KEY")
+        print("   当前 BARK_KEY 长度:", len(os.environ.get("BARK_KEY", "")))
         return False
 
-    print(f"\n📱 推送通知...")
+    print(f"\n📱 推送中...")
     print(f"   标题: {title}")
-    print(f"   内容预览: {body[:100]}...")
+    print(f"   内容: {body[:200]}...")
 
-    # Bark 支持 POST JSON（功能更丰富）
     payload = json.dumps({
+        "device_key": BARK_KEY,
         "title": title,
         "body": body,
         "group": group,
@@ -353,22 +392,21 @@ def send_bark(title: str, body: str, group: str = "世界杯") -> bool:
     req = Request(
         "https://api.day.app/push",
         data=payload,
-        headers={
-            "Content-Type": "application/json; charset=utf-8",
-        },
+        headers={"Content-Type": "application/json; charset=utf-8"},
     )
 
     try:
         with urlopen(req, timeout=10) as resp:
             result = json.loads(resp.read().decode("utf-8"))
-            if result.get("code") == 200:
-                print(f"  ✅ 推送成功！")
+            code = result.get("code")
+            if code == 200:
+                print(f"  ✅ 推送成功！请查看手机 📱")
                 return True
             else:
-                print(f"  ❌ 推送失败: {result}")
+                print(f"  ❌ Bark API 返回错误: {result}")
                 return False
-    except (URLError, HTTPError, OSError, json.JSONDecodeError) as e:
-        print(f"  ❌ 推送网络错误: {e}")
+    except Exception as e:
+        print(f"  ❌ 推送失败: {e}")
         return False
 
 
@@ -380,39 +418,41 @@ def main():
     print("=" * 40)
     print("🌍 World Cup 2026 Push")
     print("=" * 40)
+
+    raw_type = os.environ.get("PUSH_TYPE", "auto")
+    # auto 模式：根据当前时间判断
+    now_hour = (datetime.now(timezone.utc) + TZ_OFFSET).hour
+    if raw_type == "auto":
+        push_type = "morning" if now_hour < 15 else "evening"  # UTC+8 8:00=0UTC, 21:00=13UTC
+    else:
+        push_type = raw_type
+    print(f"📋 推送类型: {'🌅 早间赛程' if push_type == 'morning' else '🌇 晚间战报'} ({raw_type})")
     print()
 
-    # 确定推送类型
-    # GitHub Actions 会设置 PUSH_TYPE = morning 或 evening
-    push_type = os.environ.get("PUSH_TYPE", "morning")
-
-    # 获取今天的比赛
-    matches = get_today_matches()
+    matches = today_matches()
     print()
 
     if not matches:
-        print("⚠️ 没有获取到比赛数据，仍发送通知告知用户")
+        print("⚠️ 没有获取到比赛数据，仍发送通知")
+        date_str = (datetime.now(timezone.utc) + TZ_OFFSET).strftime("%m/%d")
         if push_type == "morning":
-            body = (datetime.now(timezone.utc) + TZ_OFFSET).strftime("今天是 %m/%d\n今天没有世界杯比赛安排\n\n有问题可以查看一下 API 数据源状态")
-            send_bark("📅 世界杯 · 今日无赛程", body)
+            send_bark(f"📅 世界杯 · {date_str} 今日无赛程",
+                      "今天没有世界杯比赛安排，休息一天～")
         else:
-            body = (datetime.now(timezone.utc) + TZ_OFFSET).strftime("今天是 %m/%d\n今天没有世界杯比赛\n\n今晚好好休息！")
-            send_bark("⚽ 世界杯 · 今日无比赛", body)
+            send_bark(f"⚽ 世界杯 · {date_str} 今日无比赛",
+                      "今天没有世界杯比赛，今晚好好休息！")
         return
 
-    # 生成推送内容
+    date_str = (datetime.now(timezone.utc) + TZ_OFFSET).strftime("%m/%d")
+
     if push_type == "morning":
-        title = f"📅 世界杯赛程 · {(datetime.now(timezone.utc) + TZ_OFFSET).strftime('%m/%d')}"
+        title = f"📅 世界杯赛程 · {date_str}"
         body = format_schedule(matches)
     else:
-        title = f"⚽ 世界杯战报 · {(datetime.now(timezone.utc) + TZ_OFFSET).strftime('%m/%d')}"
+        title = f"⚽ 世界杯战报 · {date_str}"
         body = format_results(matches)
 
-    # 发送推送
-    print(f"📋 推送类型: {push_type}")
-    print(f"📋 推送标题: {title}")
     print(f"📋 推送内容:\n{body}")
-
     send_bark(title, body)
     print("\n✅ 完成！")
 
