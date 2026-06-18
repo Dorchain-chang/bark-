@@ -1,0 +1,68 @@
+共 104 场比赛
+
+  _id: 679c9c8a5749c4077500e001
+  id: 1
+  home_team_id: 1
+  away_team_id: 2
+  home_score: 2
+  away_score: 0
+  home_scorers: {“J. Quiñones 9'”,”R. Jiménez 67'”}
+  away_scorers: null
+  group: A
+  matchday: 1
+  local_date: 06/11/2026 13:00
+  persian_date: 1405-03-21 13:00
+  stadium_id: 1
+  finished: TRUE
+  time_elapsed: finished
+  type: group
+  home_team_name_en: Mexico
+  home_team_name_fa: مکزیک
+  away_team_name_en: South Africa
+  away_team_name_fa: آفریقای جنوبی
+
+  _id: 679c9c8a5749c4077500e002
+  id: 2
+  home_team_id: 3
+  away_team_id: 4
+  home_score: 2
+  away_score: 1
+  home_scorers: {"I.B. Hwang 67'","H.G. Oh 80'"}
+  away_scorers: {"L. Krejčí 59'"}
+  group: A
+  matchday: 1
+  local_date: 06/11/2026 20:00
+  persian_date: 1405-03-21 20:00
+  stadium_id: 2
+  finished: TRUE
+  time_elapsed: finished
+  type: group
+  home_team_name_en: South Korea
+  home_team_name_fa: کره جنوبی
+  away_team_name_en: Czech Republic
+  away_team_name_fa: جمهوری چک
+
+  _id: 679c9c8a5749c4077500e003
+  id: 3
+  home_team_id: 5
+  away_team_id: 6
+  home_score: 1
+  away_score: 1
+  home_scorers: {"C. Larin 11'"}
+  away_scorers: {"Jovo Lukić 21'"}
+  group: B
+  matchday: 1
+  local_date: 06/12/2026 15:00
+  persian_date: 1405-03-22 15:00
+  stadium_id: 12
+  finished: TRUE
+  time_elapsed: finished
+  type: group
+  home_team_name_en: Canada
+  home_team_name_fa: کانادا
+  away_team_name_en: Bosnia and Herzegovina
+  away_team_name_fa: بوسنی و هرزگوین
+
+stadium_id: {'12', '3', '11', '6', '16', '15', '10', '5', '8', '4', '1', '13', '7', '14', '9', '2'}
+
+所有字段: ['_id', 'away_score', 'away_scorers', 'away_team_id', 'away_team_label', 'away_team_name_en', 'away_team_name_fa', 'finished', 'group', 'home_score', 'home_scorers', 'home_team_id', 'home_team_label', 'home_team_name_en', 'home_team_name_fa', 'id', 'local_date', 'matchday', 'persian_date', 'stadium_id', 'time_elapsed', 'type']
