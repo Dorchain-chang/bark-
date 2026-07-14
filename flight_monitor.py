@@ -166,12 +166,11 @@ def find_cheap_flights() -> list:
             print(f"\n--- {label}机场 → 大兴 ---")
             try:
                 flights = search_via_playwright(origin, dest, date, label)
-        except Exception as e:
-            print(f"  ❌ Playwright 失败: {e}")
-            print(f"  ↪ 尝试备用方案...")
-            flights = search_via_api(origin, dest, TARGET_DATE, label)
+            except Exception as e:
+                print(f"  ❌ Playwright 失败: {e}")
+                flights = []
 
-        cheap = [f for f in flights if f["price"] <= PRICE_LIMIT]
+            cheap = [f for f in flights if f["price"] <= PRICE_LIMIT]
         all_cheap.extend(cheap)
 
         if cheap:
