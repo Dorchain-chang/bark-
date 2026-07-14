@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 成都 → 北京大兴 低价机票监控
-每日查询未来 7 天航班，总价 ≤ ¥750（含机建燃油）时推送到 iPhone
+盯死 7月23日、24日 的航班，低于 ¥750 即推送
 """
 
 import json
@@ -11,31 +11,35 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError
 
 # ============================================================
-# 配置
+# 配置（改日期就在这里改）
 # ============================================================
 BARK_KEY = os.environ.get("BARK_KEY", "")
 AMADEUS_KEY = os.environ.get("AMADEUS_API_KEY", "")
 AMADEUS_SECRET = os.environ.get("AMADEUS_API_SECRET", "")
 PRICE_LIMIT = 750  # 含税总价上限（人民币）
-BJ = timezone(timedelta(hours=8))  # 北京时间
+BJ = timezone(timedelta(hours=8))
+
+# 🎯 盯死的日期
+TARGET_DATES = [
+    "2026-07-23",
+    "2026-07-24",
+]
 
 # 查询路线：成都两个机场 → 北京大兴
 ROUTES = [
-    ("CTU", "PKX"),  # 成都双流 → 北京大兴
-    ("TFU", "PKX"),  # 成都天府 → 北京大兴
+    ("CTU", "PKX"),   # 成都双流 → 北京大兴
+    ("TFU", "PKX"),   # 成都天府 → 北京大兴
 ]
 
 
 # ============================================================
-# Amadeus API 工具
+# Amadeus API
 # ============================================================
 
 def get_amadeus_token() -> str:
-    """用 API Key + Secret 获取 Bearer Token"""
     import base64
     creds = f"{AMADEUS_KEY}:{AMADEUS_SECRET}"
     auth = base64.b64encode(creds.encode()).decode()
-
     req = Request(
         "https://test.api.amadeus.com/v1/security/oauth2/token",
         data=b"grant_type=client_credentials",
@@ -45,8 +49,7 @@ def get_amadeus_token() -> str:
         },
     )
     with urlopen(req, timeout=10) as resp:
-        result = json.loads(resp.read().decode())
-        return result["access_token"]
+        return json.loads(resp.read().decode())["access_token"]
 
 
 def search_flights(origin: str, dest: str, date: str, token: str) -> list:
@@ -65,12 +68,10 @@ def search_flights(origin: str, dest: str, date: str, token: str) -> list:
         with urlopen(req, timeout=20) as resp:
             data = json.loads(resp.read().decode())
             offers = data.get("data", [])
-            # 解析为统一格式
             results = []
             for offer in offers:
                 price = float(offer["price"]["grandTotal"])
                 currency = offer["price"]["currency"]
-                # 取第一段行程
                 for itinerary in offer.get("itineraries", []):
                     segments = itinerary.get("segments", [])
                     if not segments:
@@ -87,11 +88,11 @@ def search_flights(origin: str, dest: str, date: str, token: str) -> list:
                         "price": price,
                         "currency": currency,
                         "price_cny": price if currency == "CNY" else None,
+                        "date": date,
                     })
             return results
     except URLError as e:
         print(f"  ⚠️ 请求失败 [{origin}→{dest} {date}]: {e}")
-        # 尝试读取错误详情
         try:
             err_body = json.loads(e.read().decode()) if hasattr(e, 'read') else {}
             print(f"     错误详情: {json.dumps(err_body, ensure_ascii=False)[:500]}")
@@ -104,14 +105,14 @@ def search_flights(origin: str, dest: str, date: str, token: str) -> list:
 
 
 # ============================================================
-# 核心：查未来 N 天的低价航班
+# 核心：盯死目标日期
 # ============================================================
 
-def find_cheap_flights(days_ahead: int = 7) -> list:
-    """查询未来 days_ahead 天内所有低价航班"""
+def find_cheap_flights() -> list:
+    """查询 TARGET_DATES 里所有低价航班"""
     now = datetime.now(BJ)
     print(f"📅 北京时间: {now.strftime('%Y-%m-%d %H:%M')}")
-    print(f"🔍 搜索未来 {days_ahead} 天 成都→北京大兴 的航班")
+    print(f"🎯 目标日期: {', '.join(TARGET_DATES)}")
     print(f"💰 价格上限: ¥{PRICE_LIMIT}（含税）")
 
     # 获取 Token
@@ -121,14 +122,12 @@ def find_cheap_flights(days_ahead: int = 7) -> list:
         print("  ✅ Token 获取成功")
     except Exception as e:
         print(f"  ❌ Token 获取失败: {e}")
-        print("  💡 请检查 AMADEUS_API_KEY 和 AMADEUS_API_SECRET 是否正确")
         return []
 
     cheap_flights = []
 
-    # 逐天逐路线查询
-    for day_offset in range(days_ahead):
-        date = (now + timedelta(days=day_offset)).strftime("%Y-%m-%d")
+    # 逐日期逐路线查询
+    for date in TARGET_DATES:
         for origin, dest in ROUTES:
             print(f"\n  📡 {date} {origin}→{dest} ...", end=" ", flush=True)
             flights = search_flights(origin, dest, date, token)
@@ -149,28 +148,24 @@ def find_cheap_flights(days_ahead: int = 7) -> list:
     # 按价格排序
     cheap_flights.sort(key=lambda f: f["price_cny"] or 9999)
 
-    print(f"\n📊 共找到 {len(cheap_flights)} 个低价航班（≤ ¥{PRICE_LIMIT}）")
+    print(f"\n📊 共找到 {len(cheap_flights)} 个 ≤ ¥{PRICE_LIMIT} 的航班")
     return cheap_flights
 
 
 # ============================================================
-# 格式化推送内容
+# 格式化推送
 # ============================================================
 
 def format_flights(flights: list) -> str:
-    """格式化航班信息为推送文案"""
     if not flights:
         return ""
 
-    now = datetime.now(BJ)
-    lines = [f"✈️ 成都→北京 低价机票 ({now.strftime('%m/%d')})", "─" * 20]
+    lines = ["✈️ 成都→北京大兴 低价机票", "─" * 25]
 
     for f in flights:
         price_str = f"¥{f['price_cny']}"
-        line = f"\n💵 {price_str} | {f['airline']} {f['flight_number']}"
+        line = f"\n💵 {price_str} | {f['airline']} {f['flight_number']} | {f['date'][5:]}"
         lines.append(line)
-
-        # 出发/到达
         dep = f['departure'].replace(' ', '  ')
         arr = f['arrival'].replace(' ', '  ')
         lines.append(f"   🛫 {dep}")
@@ -180,10 +175,6 @@ def format_flights(flights: list) -> str:
     lines.append(f"\n📌 共 {len(flights)} 个航班 ≤ ¥{PRICE_LIMIT}")
     return "\n".join(lines)
 
-
-# ============================================================
-# Bark 推送
-# ============================================================
 
 def send_bark(title: str, body: str) -> bool:
     if not BARK_KEY:
@@ -226,38 +217,36 @@ def send_bark(title: str, body: str) -> bool:
 
 def main():
     print("=" * 40)
-    print("✈️ 成都→北京 低价机票监控")
+    print("✈️ 成都→北京大兴 低价监控")
+    print(f"🎯 {', '.join(TARGET_DATES)}")
     print("=" * 40)
 
     # 检查配置
     if not AMADEUS_KEY or not AMADEUS_SECRET:
         print("\n❌ Amadeus API 未配置")
-        print("   请在 GitHub → Settings → Secrets → Actions 添加：")
-        print("   - AMADEUS_API_KEY")
-        print("   - AMADEUS_API_SECRET")
-        print("\n   注册地址: https://developers.amadeus.com/register")
         return
-
     if not BARK_KEY:
         print("\n❌ BARK_KEY 未配置")
         return
 
-    # 查低价航班
-    flights = find_cheap_flights(days_ahead=7)
+    # 查价
+    flights = find_cheap_flights()
     print()
 
     if not flights:
-        print(f"😴 未来 7 天没有低于 ¥{PRICE_LIMIT} 的航班，不推送")
-        # 可选：无论有没有都推送一条摘要，让用户知道脚本跑成功了
-        body = f"未来 7 天 成都→北京大兴\n最低票价均超过 ¥{PRICE_LIMIT}\n暂无特价，下次继续关注 ✈️"
+        print(f"😴 7月23/24 日没有低于 ¥{PRICE_LIMIT} 的航班")
+        body = (
+            f"7/23、7/24 成都→北京大兴\n"
+            f"最低票价均超过 ¥{PRICE_LIMIT}\n"
+            f"下次检查继续关注 ✈️"
+        )
         send_bark("✈️ 今日无特价机票", body)
         return
 
-    # 有低价航班 → 推送
+    # 有低价 → 推送
     body = format_flights(flights)
     best_price = min(f["price_cny"] for f in flights if f["price_cny"])
-    date_str = datetime.now(BJ).strftime("%m/%d")
-    title = f"✈️ 成都→北京 最低¥{best_price} ！"
+    title = f"✈️ 成都→北京 最低¥{best_price}（7/23-24）"
 
     print(f"\n📋 推送内容:\n{body}")
     send_bark(title, body)
