@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from urllib.request import Request, urlopen
 
 BARK_KEY = os.environ.get("BARK_KEY", "")
-PRICE_LIMIT = 750  # 含税总价上限（元）
+PRICE_LIMIT = 850  # 含税总价上限（元）
 BJ = timezone(timedelta(hours=8))
 
 # 🎯 目标日期（你要飞的日期）
