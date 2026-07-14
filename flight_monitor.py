@@ -54,25 +54,19 @@ def send_bark(title: str, body: str) -> bool:
 
 
 def search_via_playwright(origin: str, dest: str, date: str, origin_label: str) -> list:
-    """用 Playwright + Stealth 抓取 Google Flights 航班数据"""
+    """拦截 Google Flights 的 API 请求，直接拿 JSON 数据"""
     from playwright.sync_api import sync_playwright
 
-    url = (
-        f"https://www.google.com/travel/flights?"
-        f"q=Flights+to+{dest}+from+{origin}+on+{date}"
-    )
-    print(f"  🌐 打开 {origin}({origin_label})→{dest}  {date}")
+    url = f"https://www.google.com/travel/flights?q=Flights+to+{dest}+from+{origin}+on+{date}"
+    print(f"  🌐 {origin}({origin_label})→{dest}  {date}")
 
     flights = []
+    api_data = []
+
     with sync_playwright() as p:
-        # 用 Stealth 模式启动，防检测
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ],
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
         context = browser.new_context(
             viewport={"width": 1920, "height": 1080},
@@ -86,83 +80,79 @@ def search_via_playwright(origin: str, dest: str, date: str, origin_label: str) 
         )
         page = context.new_page()
 
-        try:
-            # 注入 Stealth 补丁（反检测）
-            try:
-                from playwright_stealth import Stealth
-                Stealth().apply_stealth_sync(page)
-                print(f"     🕶️ Stealth 模式已启用")
-            except ImportError:
-                print(f"     ⚠️ Stealth 不可用，继续裸奔")
-
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(5000)
-
-            # 尝试多种方式找搜索结果
-            selectors = [
-                'div[role="list"]',
-                '[data-g]',
-                '.Rk10dc',      # Google Flights 卡片
-                '.yR1fYc',      # 价格元素
-                'li[role="listitem"]',
-                '.gws-flights-results__result-item',
-            ]
-            found = False
-            for sel in selectors:
+        # 拦截包含航班数据的 XHR 请求
+        def on_response(response):
+            url_lower = response.url.lower()
+            if ("flights" in url_lower or "travel" in url_lower) and ".json" in url_lower:
                 try:
-                    el = page.wait_for_selector(sel, timeout=8000)
-                    if el:
-                        print(f"     ✅ 找到结果选择器: {sel}")
-                        found = True
-                        break
+                    data = response.json()
+                    api_data.append(data)
                 except:
-                    continue
+                    pass
 
-            if not found:
-                # 看看页面加载了啥
-                title = page.title()
-                print(f"     ⚠️ 未找到航班列表, 页面标题: {title}")
-                # 可能是验证码或跳转
-                page_content = page.content()
-                if "captcha" in page_content.lower():
-                    print(f"     🤖 触发了 Google 验证码!")
-                return []
+        page.on("response", on_response)
 
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # 等搜索结果加载
+            try:
+                page.wait_for_selector('[role="list"]', timeout=15000)
+            except:
+                pass
             page.wait_for_timeout(3000)
 
-            # 抓取所有航班卡片文本
-            content = page.inner_text("body")
-            # 用正则找所有 ¥ 价格
-            price_matches = re.findall(r'([¥￥])\s*([\d,]+)', content)
-            if price_matches:
-                for sym, price_str in price_matches:
-                    try:
-                        price = int(price_str.replace(",", ""))
-                        if price <= PRICE_LIMIT:
-                            # 找这个价格附近的文本描述
-                            idx = content.find(f"{sym}{price_str}")
-                            snippet = content[max(0, idx-200):idx+200]
-                            flights.append({
-                                "origin_label": origin_label,
-                                "price": price,
-                                "desc": snippet[:150].strip(),
-                            })
-                    except ValueError:
-                        continue
+            # 从 HTML 中提取价格数据（更可靠的方法）
+            html = page.content()
 
-            # 去重（按价格去重）
-            seen_prices = set()
+            # 提取所有带价格的元素
+            price_elements = page.query_selector_all('[class*="price"], [aria-label*="元"], [aria-label*="¥"]')
+            for el in price_elements:
+                text = el.inner_text()
+                prices = re.findall(r'[¥￥]?\s*(\d{3,4})', text)
+                for p in prices:
+                    price = int(p)
+                    if 200 <= price <= 3000:  # 合理价格范围
+                        flights.append({
+                            "origin_label": origin_label,
+                            "price": price,
+                            "desc": text.strip()[:100],
+                        })
+
+            # 如果上面没抓到，尝试从整个页面 HTML 中提取
+            if not flights:
+                # 用多种正则匹配价格
+                patterns = [
+                    rf'[¥￥]\s*(\d{{3,4}})(?!\d)',
+                    rf'aria-label="[^"]*?(\d{{3,4}})\s*[元¥]',
+                    rf'<[^>]*>[^<]*?[¥￥]\s*(\d{{3,4}})[^<]*?</',
+                ]
+                for pat in patterns:
+                    matches = re.findall(pat, html)
+                    for price_str in matches:
+                        try:
+                            price = int(price_str)
+                            if 200 <= price <= 3000:
+                                flights.append({"origin_label": origin_label, "price": price, "desc": ""})
+                        except ValueError:
+                            continue
+
+            # 去重
+            seen = set()
             unique = []
             for f in flights:
-                if f["price"] not in seen_prices:
-                    seen_prices.add(f["price"])
+                if f["price"] not in seen:
+                    seen.add(f["price"])
                     unique.append(f)
             flights = unique
 
-            print(f"     找到 {len(price_matches)} 个价格标注, {len(flights)} 个不超过 ¥{PRICE_LIMIT}")
+            cheap = [f for f in flights if f["price"] <= PRICE_LIMIT]
+            if flights:
+                all_prices = [f["price"] for f in flights]
+                print(f"     💰 看到价格: {sorted(set(all_prices))[:10]}")
+            print(f"     {'✅ 有低价!' if cheap else '😴 无低价'} 共{len(flights)}个航班, 最低¥{min(f['price'] for f in flights) if flights else '?'}")
 
         except Exception as e:
-            print(f"     ⚠️ 抓取出错: {e}")
+            print(f"     ⚠️ 出错: {e}")
 
         finally:
             browser.close()
