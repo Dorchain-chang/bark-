@@ -16,8 +16,11 @@ BARK_KEY = os.environ.get("BARK_KEY", "")
 PRICE_LIMIT = 750  # 含税总价上限（元）
 BJ = timezone(timedelta(hours=8))
 
-# 🎯 目标日期
-TARGET_DATE = "2026-07-20"
+# 🎯 目标日期（你要飞的日期）
+TARGET_DATES = ["2026-07-23", "2026-07-24"]
+
+# ⏰ 监控截止日期（过了这天不再推送）
+MONITOR_UNTIL = "2026-07-20"
 
 # 路线：成都双流/天府 → 北京大兴
 ROUTES = [
@@ -151,16 +154,18 @@ def find_cheap_flights() -> list:
     """查目标日期所有低价航班"""
     now = datetime.now(BJ)
     print(f"📅 北京时间: {now.strftime('%Y-%m-%d %H:%M')}")
-    print(f"🎯 目标日期: {TARGET_DATE}")
+    print(f"🎯 目标日期: {', '.join(TARGET_DATES)}")
     print(f"💰 上限: ¥{PRICE_LIMIT}（含税）")
     print()
 
     all_cheap = []
 
-    for origin, dest, label in ROUTES:
-        print(f"\n--- {label}机场 → 大兴 ---")
-        try:
-            flights = search_via_playwright(origin, dest, TARGET_DATE, label)
+    for date in TARGET_DATES:
+        print(f"\n═══ {date} ═══")
+        for origin, dest, label in ROUTES:
+            print(f"\n--- {label}机场 → 大兴 ---")
+            try:
+                flights = search_via_playwright(origin, dest, date, label)
         except Exception as e:
             print(f"  ❌ Playwright 失败: {e}")
             print(f"  ↪ 尝试备用方案...")
@@ -185,7 +190,8 @@ def find_cheap_flights() -> list:
 def format_flights(flights: list) -> str:
     if not flights:
         return ""
-    lines = [f"✈️ 成都→北京大兴 {TARGET_DATE[5:]} 低价", "─" * 25]
+    dates_str = ", ".join(d[5:] for d in TARGET_DATES)
+    lines = [f"✈️ 成都→北京大兴 {dates_str} 低价", "─" * 25]
     for f in flights:
         lines.append(f"\n💵 ¥{f['price']} | {f['origin_label']}")
         lines.append(f"   {f['desc'][:100]}")
@@ -196,11 +202,24 @@ def format_flights(flights: list) -> str:
 def main():
     print("=" * 40)
     print(f"✈️ 成都→北京大兴 低价监控")
-    print(f"🎯 {TARGET_DATE}")
+    print(f"🎯 {', '.join(TARGET_DATES)}")
+    print(f"⏰ 监控截止: {MONITOR_UNTIL}")
     print("=" * 40)
 
     if not BARK_KEY:
         print("\n❌ BARK_KEY 未配置")
+        return
+
+    # 检查是否过了监控截止日
+    today = datetime.now(BJ).strftime("%Y-%m-%d")
+    if today > MONITOR_UNTIL:
+        print(f"\n📅 今天 {today}，已过监控截止日 {MONITOR_UNTIL}")
+        print("✅ 监控任务结束！")
+        body = (
+            f"7月23-24日 成都→北京大兴 监控已结束\n"
+            f"祝旅途愉快 ✈️🎉"
+        )
+        send_bark("✈️ 机票监控已结束", body)
         return
 
     flights = find_cheap_flights()
@@ -208,7 +227,7 @@ def main():
 
     if not flights:
         body = (
-            f"7月20日 成都→北京大兴\n"
+            f"7月23-24日 成都→北京大兴\n"
             f"未找到低于 ¥{PRICE_LIMIT} 的航班\n"
             f"下次继续关注 ✈️"
         )
@@ -217,7 +236,7 @@ def main():
 
     body = format_flights(flights)
     best = min(f["price"] for f in flights)
-    title = f"✈️ 成都→北京 最低¥{best}（7/20）"
+    title = f"✈️ 成都→北京 最低¥{best}（7/23-24）"
 
     print(f"\n📋 推送内容:\n{body}")
     send_bark(title, body)
