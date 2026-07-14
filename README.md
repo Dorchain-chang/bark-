@@ -1,82 +1,64 @@
-# ⚽ 世界杯推送 - World Cup 2026 Push
+# ✈️ 成都→北京大兴 低价机票监控
 
-每天推送世界杯比分到你的 iPhone（通过 Bark App）。
+每天自动查询未来 7 天 成都→北京大兴 的航班，当发现含税总价 ≤ ¥750 时，通过 Bark 推送到你的 iPhone。
 
-## ✨ 功能
+## 工作原理
 
-| 时间 | 推送内容 |
-|------|---------|
-| 🌅 **08:00** | 当天比赛赛程（队伍 + 时间） |
-| 🌇 **21:00** | 当天比赛结果（比分 + 胜者） |
-
-- 数据来源：[worldcup26.ir](https://worldcup26.ir)（免费开源，无需 API Key）
-- 备用来源：ESPN 公共 API
-- 托管运行：GitHub Actions（免费，电脑不用开机）
-
-## 🚀 快速开始
-
-### 前置条件
-
-1. iPhone 安装 [Bark App](https://apps.apple.com/app/id1555405475)
-2. 注册 Bark 获取你的设备 Key
-
-### 步骤
-
-#### 1. 把代码传到 GitHub
-
-```bash
-# 在你电脑上
-cd D:\区块链作业\worldcup-push
-
-git init
-git add .
-git commit -m "🎉 添加世界杯推送脚本"
-
-# 在 GitHub 上新建一个仓库（不要勾选添加 README）
-# 然后回到这里：
-git remote add origin https://github.com/你的用户名/你的仓库名.git
-git branch -M main
-git push -u origin main
+```
+GitHub Actions (每天 8:00)
+    ↓ 调 Amadeus Flight API
+查询 CTU→PKX + TFU→PKX 未来 7 天价格
+    ↓ 发现 ≤ ¥750 的航班
+Bark API → 你的 iPhone 📱
 ```
 
-#### 2. 在 GitHub 上配置 Bark Key
+- 数据源：Amadeus 航空 API（全球 GDS，覆盖所有航司）
+- 运行平台：GitHub Actions（免费，电脑不用开机）
+- 推送渠道：Bark App（iPhone）
 
-1. 打开你的 GitHub 仓库页面
-2. 点 **Settings** → **Secrets and variables** → **Actions**
-3. 点 **New repository secret**
-4. Name: `BARK_KEY`
-5. Secret: `9rYX3vSr5ZG7B2GaDeMTaK`（你的 Bark Key）
-6. 点 **Add secret**
+## 快速开始
 
-#### 3. 启用 Actions
+### 1. 注册 Amadeus 免费账号
 
-1. 切到仓库的 **Actions** 标签页
-2. 如果弹出提示说"Workflows 被禁用"，点 **I understand my workflows, go ahead and enable them**
-3. 点左边的 **⚽ 世界杯推送**
-4. 点 **Enable workflow**
-5. 点右边的 **Run workflow** → 选 `morning` → 点 **Run** 测试一次
+1. 打开 https://developers.amadeus.com/register
+2. 注册（选 Individual/个人）
+3. 登录后点 **Your Apps** → **Add a new application**
+4. 应用名随意，如 `flight-monitor`
+5. 拿到 **API Key** 和 **API Secret**
 
-> ✅ 测试成功后，每天早上 08:00 和晚上 21:00 会自动推送
+### 2. 配置 GitHub Secrets
 
-## 🔧 手动测试
+在仓库 Settings → Secrets and variables → Actions → New repository secret：
 
-在 GitHub Actions 页面：
-- **Run workflow** → `morning` → 测试早上推送
-- **Run workflow** → `evening` → 测试晚上推送
+| Name | Value |
+|------|-------|
+| `BARK_KEY` | `你的Bark Key` |
+| `AMADEUS_API_KEY` | `Amadeus API Key` |
+| `AMADEUS_API_SECRET` | `Amadeus API Secret` |
 
-## 📂 文件说明
+### 3. 启用 Actions
+
+- 切到仓库 **Actions** 标签页
+- 点 **✈️ 低价机票监控** → **Enable workflow**
+- 点 **Run workflow** 手动测试一次
+
+测试成功后，每天 8:00 自动运行。
+
+## 文件说明
 
 | 文件 | 说明 |
 |------|------|
-| `worldcup_push.py` | 主要脚本（抓数据 + 推送到 Bark） |
-| `.github/workflows/worldcup.yml` | GitHub Actions 定时任务配置 |
-| `requirements.txt` | 依赖（纯标准库，无需安装额外包） |
+| `flight_monitor.py` | 主脚本（查航班 + 推送到 Bark） |
+| `.github/workflows/flight-monitor.yml` | GitHub Actions 配置 |
+| `requirements.txt` | Python 依赖 |
 
-## 🔔 还能推送什么？
+## 自定义
 
-这套框架完全可以复用，想加新功能：
-1. 在 `worldcup_push.py` 里加一个新的数据源函数
-2. 在主流程里调用它
-3. 内容会合并到每天早上/晚上的推送里
+想改价格阈值、路线、提前天数？编辑 `flight_monitor.py` 顶部：
 
-比如加天气、热搜、股票……欢迎自行扩展！
+```python
+PRICE_LIMIT = 750    # 价格上限
+ROUTES = [("CTU","PKX"), ("TFU","PKX")]  # 航线
+```
+
+然后 `git commit && git push` 即可。
