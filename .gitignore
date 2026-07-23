@@ -2,6 +2,10 @@
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+dist/
+build/
+*.egg
 .env
 venv/
 .venv/
@@ -9,7 +13,17 @@ venv/
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
+
+# Debug files
+debug_*.html
+
+# Temp
+*.log
+*.tmp
